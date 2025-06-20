@@ -3,6 +3,8 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from typing import Optional
 
+router = APIRouter()
+
 SECRET_KEY = "super-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
