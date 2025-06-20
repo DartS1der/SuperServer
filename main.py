@@ -11,3 +11,7 @@ Base.metadata.create_all(bind=engine)
 app.include_router(auth_router, prefix="/auth", tags=["Auth"])
 app.include_router(esp_router, prefix="/esp", tags=["ESP32"])
 # app.include_router(user_router, prefix="/user", tags=["User"])
+
+from user_api import router as user_router
+
+app.include_router(user_router, prefix="/user", tags=["User"])
