@@ -1,27 +1,68 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from database import SessionLocal
+from models import User, Device, Task
+from schemas import DeviceCreate, TaskCreate
+from jose import jwt, JWTError
+from fastapi.security import OAuth2PasswordBearer
 from datetime import datetime
+import auth
 
 router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-# Пример базы данных (временное хранилище в памяти)
-esp_tasks = {
-    "esp32-001": {"start_time": "2025-06-20T16:00:00", "duration_sec": 10},
-    "esp32-002": {"start_time": "2025-06-20T17:00:00", "duration_sec": 20},
-}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-class ESPRequest(BaseModel):
-    device_id: str
+# Декодирование JWT и получение пользователя
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        user_id = int(payload.get("sub"))
+    except (JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-class ESPTaskResponse(BaseModel):
-    start_time: str  # ISO формат времени
-    duration_sec: int
+    user = db.query(User).get(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
-@router.post("/get_task", response_model=ESPTaskResponse)
-def get_task(request: ESPRequest):
-    if request.device_id not in esp_tasks:
+# Привязка ESP32 к пользователю
+@router.post("/add_device")
+def add_device(device: DeviceCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if db.query(Device).filter_by(device_id=device.device_id).first():
+        raise HTTPException(status_code=400, detail="Device already registered")
+
+    new_device = Device(device_id=device.device_id, owner_id=user.id)
+    db.add(new_device)
+    db.commit()
+    return {"msg": "Device added"}
+
+# Установка задачи на устройство
+@router.post("/set_task")
+def set_task(task: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    device = db.query(Device).filter_by(device_id=task.device_id, owner_id=user.id).first()
+    if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    task = esp_tasks[request.device_id]
-    return ESPTaskResponse(**task)
+    # Если уже есть задача — заменяем
+    existing_task = db.query(Task).filter_by(device_id=device.id).first()
+    if existing_task:
+        existing_task.start_time = task.start_time
+        existing_task.duration_sec = task.duration_sec
+    else:
+        new_task = Task(device_id=device.id, start_time=task.start_time, duration_sec=task.duration_sec)
+        db.add(new_task)
+
+    db.commit()
+    return {"msg": "Task set"}
+
+# Получение списка устройств пользователя
+@router.get("/devices")
+def list_devices(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    devices = db.query(Device).filter_by(owner_id=user.id).all()
+    return [{"device_id": d.device_id} for d in devices]
